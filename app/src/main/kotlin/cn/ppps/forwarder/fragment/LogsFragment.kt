@@ -41,6 +41,7 @@ import com.xuexiang.xutil.data.DateUtils
 import com.xuexiang.xutil.resource.ResUtils.getColors
 import com.xuexiang.xutil.resource.ResUtils.getStringArray
 import com.xuexiang.xutil.tip.ToastUtils
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -58,6 +59,9 @@ class LogsFragment : BaseFragment<FragmentLogsBinding?>(), MsgPagingAdapter.OnIt
     private var adapter = MsgPagingAdapter(this)
     private val viewModel by viewModels<MsgViewModel> { BaseViewModelFactory(context) }
     private var currentType: String = "sms"
+
+    //当前正在收集的分页任务，切换页签/筛选时先取消再重建
+    private var loadJob: Job? = null
 
     //日志筛选
     private var currentFilter: MutableMap<String, Any> = mutableMapOf()
@@ -139,14 +143,11 @@ class LogsFragment : BaseFragment<FragmentLogsBinding?>(), MsgPagingAdapter.OnIt
 
         //下拉刷新
         binding!!.refreshLayout.setOnRefreshListener { refreshLayout: RefreshLayout ->
-            //adapter.refresh()
-            lifecycleScope.launch {
-                viewModel.setType(currentType).setFilter(currentFilter).allMsg.collectLatest { adapter.submitData(it) }
-            }
+            reloadData()
             refreshLayout.finishRefresh()
         }
 
-        binding!!.refreshLayout.autoRefresh()
+        reloadData()
     }
 
     override fun onItemClicked(view: View?, item: MsgAndLogs) {
@@ -209,9 +210,17 @@ class LogsFragment : BaseFragment<FragmentLogsBinding?>(), MsgPagingAdapter.OnIt
 
     override fun onItemRemove(view: View?, id: Int) {}
 
+    /**
+     * 【修复】切换页签/筛选/刷新时，先取消旧的分页收集，再按当前 type + filter 重新建数据流。
+     * 原来只调 adapter.refresh()，对分页适配器不生效，导致三个页签永远显示同一份数据。
+     */
     private fun reloadData() {
         viewModel.setType(currentType).setFilter(currentFilter)
-        adapter.refresh()
+        Log.d(TAG, "reloadData, currentType=$currentType, filter=$currentFilter")
+        loadJob?.cancel()
+        loadJob = lifecycleScope.launch {
+            viewModel.allMsg().collectLatest { adapter.submitData(it) }
+        }
         binding!!.recyclerView.scrollToPosition(0)
     }
 

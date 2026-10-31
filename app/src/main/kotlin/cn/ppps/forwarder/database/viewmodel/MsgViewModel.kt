@@ -1,11 +1,9 @@
 package cn.ppps.forwarder.database.viewmodel
 
 import androidx.lifecycle.ViewModel
-import androidx.lifecycle.viewModelScope
 import androidx.paging.Pager
 import androidx.paging.PagingConfig
 import androidx.paging.PagingData
-import androidx.paging.cachedIn
 import androidx.sqlite.db.SimpleSQLiteQuery
 import cn.ppps.forwarder.database.dao.MsgDao
 import cn.ppps.forwarder.database.entity.MsgAndLogs
@@ -28,13 +26,20 @@ class MsgViewModel(private val dao: MsgDao) : ViewModel() {
         return this
     }
 
-    val allMsg: Flow<PagingData<MsgAndLogs>> = Pager(
+    /**
+     * 【修复】原来这里是 val allMsg = Pager(...).flow.cachedIn(viewModelScope)，
+     * 数据流在 ViewModel 创建时就定死了，且 cachedIn 会把第一次（短信）的分页结果缓存并回放，
+     * 导致切换“短信/通话/应用”时拿到的永远是同一份数据。
+     * 改为函数：每次调用都按当前 type/filter 重新建 Pager，切换页签即可真正重新查询。
+     */
+    fun allMsg(): Flow<PagingData<MsgAndLogs>> = Pager(
         config = PagingConfig(
             pageSize = 10,
             enablePlaceholders = false,
             initialLoadSize = 10
         )
     ) {
+        Log.d("MsgViewModel", "build PagingSource, type=$type, filter=$filter")
         if (filter.isEmpty()) {
             dao.pagingSource(type)
         } else {
@@ -49,7 +54,7 @@ class MsgViewModel(private val dao: MsgDao) : ViewModel() {
             dao.pagingSource(query)
         }
 
-    }.flow.cachedIn(viewModelScope)
+    }.flow
 
     fun delete(id: Long) = ioThread {
         dao.delete(id)

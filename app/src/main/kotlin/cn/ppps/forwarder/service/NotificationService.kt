@@ -20,6 +20,10 @@ import cn.ppps.forwarder.workers.SendWorker
 import com.google.gson.Gson
 import com.xuexiang.xrouter.utils.TextUtils
 import com.xuexiang.xutil.display.ScreenUtils
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import java.util.Date
 
 
@@ -27,6 +31,9 @@ import java.util.Date
 class NotificationService : NotificationListenerService() {
 
     private val TAG: String = NotificationService::class.java.simpleName
+
+    // 直接派发用的协程作用域（常驻服务进程，不随单条消息结束）
+    private val dispatchScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun onListenerConnected() {
         Log.d(TAG, "onListenerConnected")
@@ -125,17 +132,39 @@ class NotificationService : NotificationListenerService() {
                 }
             }
 
-            val request = OneTimeWorkRequestBuilder<SendWorker>().setInputData(
-                workDataOf(
-                    Worker.SEND_MSG_INFO to Gson().toJson(msgInfo),
-                )
-            ).build()
-            WorkManager.getInstance(applicationContext).enqueue(request)
+            //【修复】直接派发，不再依赖 WorkManager 排队
+            //WorkManager 调度静默失效（典型表现：任务已入队但永不执行、且不打任何异常日志）
+            //会导致通知长期不转发，这里改为直接调用派发逻辑，失败时再退回 WorkManager 兜底。
+            val msgInfoJson = Gson().toJson(msgInfo)
+            dispatchScope.launch {
+                try {
+                    Log.d(TAG, "直接派发通知：$from | $title")
+                    val ok = SendWorker.dispatch(applicationContext, msgInfoJson)
+                    Log.d(TAG, "直接派发结果：$ok | $from")
+                } catch (e: Exception) {
+                    Log.e(TAG, "直接派发异常，转 WorkManager 兜底：" + e.message.toString())
+                    enqueueByWorkManager(msgInfoJson)
+                }
+            }
 
         } catch (e: Exception) {
             Log.e(TAG, "Parsing Notification failed: " + e.message.toString())
         }
 
+    }
+
+    private fun enqueueByWorkManager(msgInfoJson: String) {
+        try {
+            val request = OneTimeWorkRequestBuilder<SendWorker>().setInputData(
+                workDataOf(
+                    Worker.SEND_MSG_INFO to msgInfoJson,
+                )
+            ).build()
+            WorkManager.getInstance(applicationContext).enqueue(request)
+            Log.d(TAG, "WorkManager 兜底入队：${request.id}")
+        } catch (e: Exception) {
+            Log.e(TAG, "WorkManager 兜底入队异常：" + e.message.toString())
+        }
     }
 
     //关键词黑名单匹配：一行一个关键词，支持正则表达式，命中通知标题或内容任意一项即返回 true
